@@ -2,10 +2,11 @@ import requests
 import mysql.connector
 from datetime import datetime
 
+# Configuration - Ensure 'host' has NO http:// or trailing /
 DB_CONFIG = {
     "host": "kafka-18fe5c85-snehalsubu18-7942.d.aivencloud.com",
     "user": "avnadmin",
-    "password": "DP19",
+    "password": "YOUR_ACTUAL_PASSWORD_HERE",
     "database": "defaultdb",
     "port": 26243
 }
@@ -25,41 +26,37 @@ def fetch_weather():
 
 def store_data(data):
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        # Note the ssl_disabled=False here as well
+        conn = mysql.connector.connect(**DB_CONFIG, ssl_disabled=False)
         cursor = conn.cursor()
         query = "INSERT INTO weather_logs (city, temperature, humidity, pressure, description) VALUES (%s, %s, %s, %s, %s)"
         cursor.execute(query, (CITY, data['temp'], data['humidity'], data['pressure'], data['desc']))
         conn.commit()
         cursor.close()
         conn.close()
-        print("✅ Data pushed to Aiven Cloud.")
+        print(f"✅ [{datetime.now()}] Data successfully pushed to Aiven.")
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"❌ Database Error: {e}")
 
 def predict_tomorrow():
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = mysql.connector.connect(**DB_CONFIG, ssl_disabled=False)
         cursor = conn.cursor()
-        # Get last 24 hours of data
         cursor.execute("SELECT temperature FROM weather_logs ORDER BY recorded_at DESC LIMIT 24")
         rows = cursor.fetchall()
         conn.close()
 
-        if len(rows) < 5:
-            return "Collecting data..."
+        if len(rows) < 5: return "More data needed"
 
         temps = [r[0] for r in rows]
-        avg_temp = sum(temps) / len(temps)
-        
-        # Calculate trend (Current - Oldest in window)
-        trend = (temps[0] - temps[-1]) * 0.2 
-        prediction = avg_temp + trend
-        
+        # Weighted average: Recent readings are 50% of the prediction
+        prediction = (temps[0] * 0.5) + (sum(temps[1:5]) / 4 * 0.5)
         return round(prediction, 2)
     except:
         return "N/A"
 
 if __name__ == "__main__":
-    data = fetch_weather()
-    store_data(data)
-    print(f"Current: {data['temp']}°C | Predicted: {predict_tomorrow()}°C")
+    weather_data = fetch_weather()
+    store_data(weather_data)
+    print(f"Current Temp: {weather_data['temp']}°C")
+    print(f"Predicted Temp: {predict_tomorrow()}°C")
