@@ -4,11 +4,11 @@ from datetime import datetime
 
 # Configuration - Replace with your Cloud DB details
 DB_CONFIG = {
-    "host": "http://kafka-18fe5c85-snehalsubu18-7942.d.aivencloud.com/",
+    "host": "kafka-18fe5c85-snehalsubu18-7942.d.aivencloud.com", # Remove http:// and /
     "user": "avnadmin",
-    "password": "your-password",
+    "password": "your-actual-password",
     "database": "defaultdb",
-    "port": 26243 # Standard MySQL is 3306, Aiven is often 24756
+    "port": 26243 
 }
 
 API_KEY = "1f8e5fb2fb0083baea9f23a7b0c6c4aa"
