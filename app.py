@@ -1,26 +1,30 @@
 import streamlit as st
 import pandas as pd
 import mysql.connector
+from mysql.connector import Error
 import requests
 import plotly.express as px
-from mysql.connector import Error
 
-# --- DATABASE CONNECTION ---
+# --- DATABASE CONNECTION WITH TIMEOUT & SSL ---
 def get_db_connection():
     try:
+        # We add connection_timeout so the app doesn't hang if the DB is down
         conn = mysql.connector.connect(
             host=st.secrets["mysql"]["host"],
             port=st.secrets["mysql"]["port"],
             user=st.secrets["mysql"]["user"],
             password=st.secrets["mysql"]["password"],
-            database=st.secrets["mysql"]["database"]
+            database=st.secrets["mysql"]["database"],
+            connection_timeout=5, 
+            use_pure=True # Helps with compatibility in cloud environments
         )
         return conn
     except Error as e:
-        st.error(f"Error connecting to MySQL: {e}")
+        st.error(f"🔌 Database Connection Error: {e}")
+        st.info("Check if your Cloud DB allowlist includes IP 0.0.0.0/0")
         return None
 
-# --- INITIALIZE DATABASE TABLE ---
+# --- DATABASE INITIALIZATION ---
 def init_db():
     conn = get_db_connection()
     if conn:
@@ -39,74 +43,75 @@ def init_db():
         cursor.close()
         conn.close()
 
-# --- API INTEGRATION ---
+# --- API LOGIC ---
 def fetch_and_save(city):
     api_key = st.secrets["openweathermap"]["api_key"]
     url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
     
-    response = requests.get(url)
-    if response.status_status == 200:
-        res = response.json()
-        data = (res['name'], res['main']['temp'], res['main']['humidity'], res['weather'][0]['description'])
-        
-        conn = get_db_connection()
-        if conn:
-            cursor = conn.cursor()
-            query = "INSERT INTO daily_weather (city, temperature, humidity, description) VALUES (%s, %s, %s, %s)"
-            cursor.execute(query, data)
-            conn.commit()
-            cursor.close()
-            conn.close()
-            return True
-    else:
-        st.error("Failed to fetch data. Check your City Name or API Key.")
-        return False
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            res = response.json()
+            data = (res['name'], res['main']['temp'], res['main']['humidity'], res['weather'][0]['description'])
+            
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                query = "INSERT INTO daily_weather (city, temperature, humidity, description) VALUES (%s, %s, %s, %s)"
+                cursor.execute(query, data)
+                conn.commit()
+                cursor.close()
+                conn.close()
+                return True
+        else:
+            st.error(f"API Error: Received status code {response.status_code}")
+    except Exception as e:
+        st.error(f"Request failed: {e}")
+    return False
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Weather Trends", layout="wide")
+st.set_page_config(page_title="Weather Dashboard", layout="wide")
 init_db()
 
-st.title("☁️ Weather Data Dashboard & Predictor")
-st.markdown("Fetching live data from OpenWeatherMap and storing in Cloud MySQL.")
+st.title("🌡️ Weather Data Dashboard")
 
-# Sidebar for controls
-st.sidebar.header("Settings")
-city_input = st.sidebar.text_input("Enter City", "London")
+# Sidebar
+st.sidebar.header("Control Panel")
+city_input = st.sidebar.text_input("City Name", "London")
 
-if st.sidebar.button("Update Live Data"):
-    with st.spinner('Fetching...'):
+if st.sidebar.button("Fetch Live Data"):
+    with st.spinner('Syncing with API...'):
         if fetch_and_save(city_input):
-            st.sidebar.success(f"Data logged for {city_input}!")
+            st.sidebar.success("Database Updated!")
 
-# --- DATA VISUALIZATION ---
+# Data Display Logic
 conn = get_db_connection()
 if conn:
-    query = f"SELECT * FROM daily_weather WHERE city='{city_input}' ORDER BY timestamp DESC"
-    df = pd.read_sql(query, conn)
-    conn.close()
-
-    if not df.empty:
-        # 1. Metrics Row
-        col1, col2, col3 = st.columns(3)
-        latest = df.iloc[0]
+    # Use a try-block for the query to handle empty tables gracefully
+    try:
+        query = f"SELECT * FROM daily_weather WHERE city='{city_input}' ORDER BY timestamp DESC"
+        df = pd.read_sql(query, conn)
         
-        # Simple Prediction: Average of last 5 entries
-        predicted_temp = round(df['temperature'].head(5).mean(), 1)
+        if not df.empty:
+            # Metrics
+            c1, c2, c3 = st.columns(3)
+            latest = df.iloc[0]
+            prediction = round(df['temperature'].mean(), 1) # Simple Moving Average
 
-        col1.metric("Current Temp", f"{latest['temperature']}°C", f"{latest['description']}")
-        col2.metric("Humidity", f"{latest['humidity']}%")
-        col3.metric("Predicted (Next Day)", f"{predicted_temp}°C", help="Based on 5-day moving average")
+            c1.metric("Current Temp", f"{latest['temperature']}°C")
+            c2.metric("Humidity", f"{latest['humidity']}%")
+            c3.metric("Predicted (Avg)", f"{prediction}°C")
 
-        # 2. Trend Chart
-        st.subheader("📈 Temperature Trends")
-        fig = px.line(df, x='timestamp', y='temperature', 
-                     title=f"Historical Temperature in {city_input}",
-                     labels={'timestamp': 'Time', 'temperature': 'Temp (°C)'},
-                     template="plotly_dark")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # 3. Data Table
-        with st.expander("📂 View Historical Logs"):
-            st.dataframe(df, use_container_width=True)
-    else:
-        st.info("No data available for this city yet. Click 'Update Live Data' in the sidebar.")
+            # Chart
+            fig = px.line(df, x='timestamp', y='temperature', title=f"Temp Trend: {city_input}")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Table
+            st.dataframe(df)
+        else:
+            st.warning(f"No records found for {city_input}. Click 'Fetch Live Data' to start.")
+            
+    except Exception as e:
+        st.error(f"Data processing error: {e}")
+    finally:
+        conn.close()
